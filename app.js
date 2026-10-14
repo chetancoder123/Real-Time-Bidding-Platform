@@ -1,73 +1,47 @@
 const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const { Pool } = require('pg');
-const dotenv = require('dotenv');
-const cookieParser = require('cookie-parser');
-const createUserRoutes = require('./routes/userRoutes');
-const createItemRoutes = require('./routes/itemRoutes');
-const createBidRoutes = require('./routes/bidRoutes');
-const createNotificationRoutes = require('./routes/notificationRoutes');
-
-dotenv.config();
-
+const http = require('node:http');
+const path = require('node:path');
+const { Server } = require('socket.io');
+const { createStore } = require('./demo-store');
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
-
-const db = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT || 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
+const io = new Server(server, { transports: ['websocket'], maxHttpBufferSize: 16384 });
+const store = createStore();
+app.use(express.json({ limit: '16kb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/health', (req, res) => res.json({ status: 'ok', storage: 'temporary-memory', databaseRequired: false }));
+app.get('/api/state', (req, res) => res.json(store.snapshot()));
+app.post('/api/auctions', (req, res) => {
+  try {
+    const auction = store.createAuction(req.body, req.body.bidder);
+    io.emit('state', store.snapshot());
+    res.status(201).json({ auction, state: store.snapshot() });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
-
-const databaseConfigured = Boolean(process.env.DATABASE_URL || process.env.DB_HOST);
-if (databaseConfigured) db.connect((err, client, release) => {
-    if (err) {
-        console.error('Database connection error:', err.stack);
-    } else {
-        console.log('Database connected');
-        release();
-    }
+app.post('/api/auctions/:id/bids', (req, res) => {
+  try {
+    const auction = store.placeBid(req.params.id, req.body.amount, req.body.bidder);
+    io.emit('state', store.snapshot());
+    res.json({ auction, state: store.snapshot() });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
-
-app.use(express.json());
-app.use(cookieParser());
-app.get('/health', (req, res) => res.json({ status: 'ok', databaseConfigured }));
-app.get('/', (req, res) => res.json({
-    service: 'Real-Time Bidding Platform API',
-    databaseConfigured,
-    endpoints: ['/health', '/users/register', '/users/login', '/users/profile', '/items', '/bids', '/notifications'],
-    note: databaseConfigured ? 'API server is running.' : 'Set DATABASE_URL and JWT_SECRET in Vercel to enable database-backed features.'
-}));
-app.use((req, res, next) => {
-    if (!databaseConfigured) return res.status(503).json({ error: 'Database is not configured. Set DATABASE_URL in Vercel.' });
-    next();
+io.on('connection', socket => {
+  socket.emit('state', store.snapshot());
+  socket.on('state:request', () => socket.emit('state', store.snapshot()));
+  socket.on('auction:create', (payload, reply) => {
+    try {
+      const auction = store.createAuction(payload, payload?.bidder);
+      io.emit('state', store.snapshot());
+      if (typeof reply === 'function') reply({ ok: true, auction });
+    } catch (error) { if (typeof reply === 'function') reply({ ok: false, error: error.message }); }
+  });
+  socket.on('auction:bid', (payload, reply) => {
+    try {
+      const auction = store.placeBid(payload?.id, payload?.amount, payload?.bidder);
+      io.emit('state', store.snapshot());
+      if (typeof reply === 'function') reply({ ok: true, auction });
+    } catch (error) { if (typeof reply === 'function') reply({ ok: false, error: error.message }); }
+  });
 });
-
-app.use('/users', createUserRoutes(db));
-app.use('/items', createItemRoutes(db));
-app.use('/bids', createBidRoutes(db, io));
-app.use('/notifications', createNotificationRoutes(db));
-
-io.on('connection', (socket) => {
-    console.log('New client connected');
-    socket.on('bid', (data) => {
-        io.emit('update', data);
-    });
-    socket.on('disconnect', () => {
-        console.log('Client disconnected');
-    });
-});
-
-const PORT = process.env.PORT || 3000;
-if (require.main === module) {
-    server.listen(PORT, () => {
-        console.log(`Server running on port ${PORT}`);
-    });
-}
-
-module.exports = { db, io, server };
+if (require.main === module) server.listen(process.env.PORT || 3000);
+module.exports = { app, server, io, store };

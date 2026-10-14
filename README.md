@@ -1,5 +1,14 @@
 # Real-Time Bidding Platform
 
+## Database-free web demo
+
+The deployed app now serves a browser interface at `/`. No PostgreSQL or model service is required.
+Run `npm install`, then `npm start`. Run `npm test` for backend and live-event checks.
+Choose a display name, explore sample items, create an auction, or place a bid. No payment or secure account is involved.
+Auctions and bids are temporary server memory and may reset on restart. Separate Vercel instances can have separate state.
+Socket.IO uses WebSocket transport; HTTP polling is a fallback when a WebSocket connection cannot be established.
+The original PostgreSQL project documentation is retained below for reference; those routes are not used by this demo.
+
 ## Introduction
 This project is a real-time bidding platform built using Node.js, Express, PostgreSQL, and Socket.IO. The platform allows users to create items, place bids, and receive real-time notifications about bid updates and other important events.
 
